@@ -1,7 +1,7 @@
-from ili9341 import Display, color565
+from src.ili9341 import Display, color565
 from machine import Pin, SPI
 from utime import sleep_ms
-from xglcd_font import XglcdFont
+from src.xglcd_font import XglcdFont
 
 class DataMessage(object):
     
@@ -13,10 +13,16 @@ class DataMessage(object):
         self.color = color
         self.value = value
         self.unit = unit
-    
-    def dataStr(self):
-        return self.message + self.value + self.unit
 
+    def draw_data(self, display, data):
+        display.draw_text(int(self.x + len(self.message) * self.font.width), int(self.y), self.value + " " + self.unit,
+                          self.font, 0, landscape=False)
+        
+        self.value = str(data)
+        
+        display.draw_text(int(self.x + len(self.message) * self.font.width), int(self.y), self.value + " " + self.unit,
+                          self.font, self.color, landscape=False)
+        
 class Screen(object):
     def __init__(self, display, messages = []):
         self.display = display
@@ -25,6 +31,9 @@ class Screen(object):
     def draw_screen(self):
         self.display.clear()
         sleep_ms(100)
-        for msg in self.messages:  
-            self.display.draw_text(int(msg.x), int(msg.y), msg.dataStr(), msg.font,
-                              msg.color, landscape=True)
+        for msg in self.messages:
+            self.display.draw_text(int(msg.x), int(msg.y), msg.message, msg.font,
+                              msg.color, landscape=False)
+            msg.draw_data(self.display, msg.value)
+        
+        #self.display.draw_image("images/Python41x49.raw", 100, 220, 25, 25)
