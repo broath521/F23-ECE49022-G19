@@ -7,9 +7,13 @@ i2c = machine.I2C(1, scl=machine.Pin(7), sda=machine.Pin(6), freq = 400000)  # R
 # MCP3424 configuration
 address = 0x68  # Default address, change if you've connected the address pins differently
 
-servo = machine.PWM(machine.Pin(22, mode=machine.Pin.OUT))
-servo.freq(400)
-servo.duty_u16(17476) #Rest position at 90
+servo1 = machine.PWM(machine.Pin(22, mode=machine.Pin.OUT))
+servo1.freq(400)
+servo1.duty_u16(17476) #Rest position at 90
+
+servo2 = machine.PWM(machine.Pin(, mode=machine.Pin.OUT))
+servo2.freq(400)
+servo2.duty_u16(17476) #Rest position at 90
 
 # Function to read data from a specific channel
 def read_channel(channel):
@@ -45,17 +49,29 @@ while True:
     
     
 
-    UD_voltage = voltage_channel_0 - voltage_channel_1
+    UD_voltage = ((voltage_channel_1 + voltage_channel_2) / 2) - ((voltage_channel_0 + voltage_channel_3) / 2)
+    LR_voltage = ((voltage_channel_2 + voltage_channel_3) / 2) - ((voltage_channel_0 + voltage_channel_1) / 2)
     move_amount_UD = 17476 + (UD_voltage*8738)
-    #move_amount_LR = 17476 + (LR_voltage*8738)
+    move_amount_LR = 17476 + (LR_voltage*8738)
     
     if (UD_voltage) < -0.1:
         print("Move Down")
-        servo.duty_u16(int(move_amount_UD)) #Move right from rest position [90 degrees] (if 45, then 8738)
+        servo1.duty_u16(int(move_amount_UD)) #Move right from rest position [90 degrees] (if 45, then 8738)
     elif (UD_voltage) > 0.1:
         print("Move Up")
-        servo.duty_u16(int(move_amount_UD)) #Move left from rest position [90 degrees] (if 135, then 26214)
+        servo1.duty_u16(int(move_amount_UD)) #Move left from rest position [90 degrees] (if 135, then 26214)
     else:
         print("Don't Move")
+        
+    if (LR_voltage) < -0.1:
+        print("Move Right")
+        servo2.duty_u16(int(move_amount_UD)) #Move right from rest position [90 degrees] (if 45, then 8738)
+    elif (LR_voltage) > 0.1:
+        print("Move Left")
+        servo2.duty_u16(int(move_amount_UD)) #Move right from rest position [90 degrees] (if 45, then 8738)
+    else:
+        print("Don't Move")
+        
     print("Up/Down Voltage Difference: ", UD_voltage)
+    print("Left/Right Voltage Difference: ", LR_voltage)
     time.sleep(.1)  # Adjust the interval as needed
