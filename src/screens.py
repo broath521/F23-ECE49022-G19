@@ -1,7 +1,7 @@
-from src.ili9341 import Display, color565
+from lib.ili9341 import Display, color565
 from machine import Pin, SPI
 from utime import sleep_ms
-from src.xglcd_font import XglcdFont
+from lib.xglcd_font import XglcdFont
 
 class DataMessage(object):
     
@@ -15,9 +15,6 @@ class DataMessage(object):
         self.unit = unit
 
     def draw_data(self, display, data):
-        display.draw_text(int(self.x + len(self.message) * self.font.width), int(self.y), self.value + " " + self.unit,
-                          self.font, 0, landscape=False)
-        
         self.value = str(data)
         
         display.draw_text(int(self.x + len(self.message) * self.font.width), int(self.y), self.value + " " + self.unit,
