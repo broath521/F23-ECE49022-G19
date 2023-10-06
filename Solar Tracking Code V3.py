@@ -51,25 +51,8 @@ def main():
         UD_voltage = ((voltage_channel_3 + voltage_channel_2) / 2) - ((voltage_channel_0 + voltage_channel_1) / 2)
         LR_voltage = ((voltage_channel_0 + voltage_channel_3) / 2) - ((voltage_channel_2 + voltage_channel_1) / 2)
         
-        if (UD_voltage) < -1*thresh:
-    #         print("Move Down")
-            
-            while move_UD > 8738:
-                move_UD -= 600
-                servo1.duty_u16(move_UD)
-                time.sleep(0.1)
-                
-            time.sleep(0.1)#Move down from rest position [90 degrees] (if 45, then 8738)
-        elif (UD_voltage) > thresh:
-    #         print("Move Up")
-    
-            while move_UD < 26214:
-                move_UD += 600
-                servo1.duty_u16(move_UD)
-                time.sleep(0.1)#Move up from rest position [90 degrees] (if 135, then 26214)
-
                  
-        elif (LR_voltage) < -1*thresh:
+        if (LR_voltage) < -1*thresh:
     #         print("Move Right")
             servo2.duty_u16(int(4000)) #Move right from rest position [90 degrees] (if 45, then 8738)
         elif (LR_voltage) > thresh:
@@ -77,6 +60,25 @@ def main():
             servo2.duty_u16(int(5000)) #Move left from rest position [90 degrees] (if 135, then 26214)
         else:
             servo2.duty_u16(int(0))
+            
+            if (UD_voltage) < -1*thresh:
+        #         print("Move Down")
+                
+                while move_UD > 8738:
+                    move_UD -= 600
+                    servo1.duty_u16(move_UD)
+                    time.sleep(0.1)
+                    
+                time.sleep(0.1)#Move down from rest position [90 degrees] (if 45, then 8738)
+            elif (UD_voltage) > thresh:
+        #         print("Move Up")
+        
+                while move_UD < 26214:
+                    move_UD += 600
+                    servo1.duty_u16(move_UD)
+                    time.sleep(0.1)#Move up from rest position [90 degrees] (if 135, then 26214)
+            
+            
         led.toggle()
     #     print("BL: ", voltage_channel_0, "      BR: ", voltage_channel_1, "      TR: ", voltage_channel_2, "      TL: ", voltage_channel_3)
     # 
