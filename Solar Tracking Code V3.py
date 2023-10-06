@@ -14,7 +14,8 @@ def main():
 
     servo1 = machine.PWM(machine.Pin(22, mode=machine.Pin.OUT)) #Up Down Servo
     servo1.freq(400)
-    servo1.duty_u16(17476) #Rest position at 90
+    move_UD = 17476
+    servo1.duty_u16(move_UD) #Rest position at 90
 
 
     servo2 = machine.PWM(machine.Pin(13, mode=machine.Pin.OUT)) #Left Right Servo
@@ -49,17 +50,24 @@ def main():
 
         UD_voltage = ((voltage_channel_3 + voltage_channel_2) / 2) - ((voltage_channel_0 + voltage_channel_1) / 2)
         LR_voltage = ((voltage_channel_0 + voltage_channel_3) / 2) - ((voltage_channel_2 + voltage_channel_1) / 2)
-        move_amount_UD = 17476 + (UD_voltage*8738)
-        move_amount_LR = 17476 + (LR_voltage*8738)
         
         if (UD_voltage) < -1*thresh:
     #         print("Move Down")
-            servo1.duty_u16(int(8738))
+            
+            while move_UD > 8738:
+                move_UD -= 600
+                servo1.duty_u16(move_UD)
+                time.sleep(0.1)
+                
             time.sleep(0.1)#Move down from rest position [90 degrees] (if 45, then 8738)
         elif (UD_voltage) > thresh:
     #         print("Move Up")
-            servo1.duty_u16(int(26214))
-            time.sleep(0.1)#Move up from rest position [90 degrees] (if 135, then 26214)
+    
+            while move_UD < 26214:
+                move_UD += 600
+                servo1.duty_u16(move_UD)
+                time.sleep(0.1)#Move up from rest position [90 degrees] (if 135, then 26214)
+
                  
         elif (LR_voltage) < -1*thresh:
     #         print("Move Right")
