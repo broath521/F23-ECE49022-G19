@@ -28,6 +28,9 @@ def main():
         reset = Pin(10, Pin.IN)
         forward = Pin(11, Pin.IN)
         backward = Pin(12, Pin.IN)
+        toggle_solar = Pin(27, Pin.IN)
+        
+        solar_flag = False #flag to disable/enable solar tracking
         
         #setup I2C devices
         i2c0 = I2C(0, sda=Pin(0), scl=Pin(1), freq=100000)
@@ -73,7 +76,11 @@ def main():
         start_message_1 = DataMessage("Loading System...", 0, 60, fontType, color565(255,255,255), value = "", unit = "")
         start_message_2 = DataMessage("Taking Data...", 0, start_message_1.y + int(2*fontType.height),
                                       fontType, color565(255,255,255), value = "", unit = "")
-        start_screen = Screen(display, [start_message_1, start_message_2, suns_message])
+        solar_toggle_msg = DataMessage("Tracking: ", 0, start_message_2.y + int(2*fontType.height),
+                                      fontType, color565(255,255,255), value = "Disabled", unit = "")
+        
+        solar_screen = Screen(display, [solar_toggle_msg, suns_message])
+        start_screen = Screen(display, [start_message_1, start_message_2, solar_toggle_msg, suns_message])
         
         #reset screen
         reset_message_1 = DataMessage("Resetting System...", 0, 60, fontType, color565(255,255,255), value = "", unit = "")
@@ -110,7 +117,7 @@ def main():
         
         exit_screen = Screen(display, [exit_msg, suns_message])
         
-        screenArr = [start_screen, reset_screen, screen1, screen2, screen3, exit_screen]
+        screenArr = [start_screen, reset_screen, screen1, screen2, screen3, exit_screen, solar_screen]
         
         #time in between data updates (in ms)
         #charge, time, temp, altitude, distance, steps, LDRs
@@ -216,6 +223,7 @@ def main():
             state_reset = not reset.value()
             state_forward = not forward.value()
             state_backward = not backward.value()
+            state_solar = not toggle_solar.value()
             
             #button check logic
             if(state_reset):
@@ -273,6 +281,26 @@ def main():
                 sleep_ms(50)
                 screenArr[current_screen].draw_screen()
                 sleep_ms(100)
+            
+            if(state_solar):
+                if(solar_toggle_msg.value == "Disabled"):
+                    solar_toggle_msg.value = "Enabled"
+                elif(solar_toggle_msg.value == "Enabled"):
+                    solar_toggle_msg.value = "Disabled"
+                
+                #store last screen and load solar flag screen
+                last_screen = current_screen
+                current_screen = 6
+                screenArr[current_screen].draw_screen()
+                
+                #update flag
+                solar_flag = not solar_flag
+                sleep(4)
+                
+                #return to last screen
+                current_screen = last_screen
+                screenArr[current_screen].draw_screen()
+                sleep(.5)
             
             ###timing loops###
             current_time = ticks_ms()
@@ -407,23 +435,22 @@ def main():
 
             #LDR check
             if ticks_diff(current_time, last_updates[6]) >= timing_arr[6]:
-                #read voltages from channels 1 to 4 on MCP3234
-                
-                for i in range(4):
-                    ldr_voltages[i] = read_channel(i, i2c0)
-                    sleep(.1)
-                
-                #rotate servos based off of voltage readings
-                move_amount_UD = move_servos(servos, ldr_voltages, servo_thresh, move_amount_UD)
+                if(solar_flag):
+                    #read voltages from channels 1 to 4 on MCP3234
+                    
+                    for i in range(4):
+                        ldr_voltages[i] = read_channel(i, i2c0)
+                        sleep(.1)
+                    
+                    #rotate servos based off of voltage readings
+                    move_amount_UD = move_servos(servos, ldr_voltages, servo_thresh, move_amount_UD)
                 
                 last_updates[6] = current_time
 
             
             sleep_ms(10)
-    except KeyboardInterrupt:
-        display.clear()
-        display.cleanup()
-    '''except Exception as e:
+            
+    except Exception as e:
         print(e)
         display.clear()
         sleep(.5)
@@ -438,7 +465,7 @@ def main():
             if(state_reset):
                 break;
             sleep(.1)
-        main()'''
+        main()
         
 #call main on startup
 main()
