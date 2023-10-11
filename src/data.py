@@ -1,7 +1,7 @@
 from time import sleep
 
 def calc_charge(voltage):
-    print(voltage)
+    #print(voltage)
     if(voltage > 13.6):
         return 100
     elif(voltage <= 13.6 and voltage > 12.8):
