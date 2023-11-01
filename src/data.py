@@ -1,4 +1,5 @@
 from time import sleep
+from math import exp
 
 def calc_charge(voltage):
     #print(voltage)
@@ -13,11 +14,11 @@ def calc_charge(voltage):
     else:
         return 0
 
-def average_volt(volt_arr):
+def average_volt(volt_arr, length_arr):
     sum_volt = 0
-    for i in range(10):
+    for i in range(length_arr):
         sum_volt += volt_arr[i]
-    bat_v_avg = sum_volt / 10
+    bat_v_avg = sum_volt / length_arr
 
     return bat_v_avg
 
@@ -54,3 +55,11 @@ def format_datetime(datetime):
     format_time = hour + ":" + minute + ":" + second
     
     return format_date, format_time
+
+
+
+
+
+
+
+

@@ -15,6 +15,10 @@ class DataMessage(object):
         self.unit = unit
 
     def draw_data(self, display, data):
+        if(len(str(data)) < len(self.value)):
+            display.draw_text(int(self.x + len(self.message) * self.font.width), int(self.y), self.value + " " + self.unit,
+                          self.font, 0, landscape=False)
+        
         self.value = str(data)
         
         display.draw_text(int(self.x + len(self.message) * self.font.width), int(self.y), self.value + " " + self.unit,
@@ -27,7 +31,6 @@ class Screen(object):
 
     def draw_screen(self):
         self.display.clear()
-        sleep_ms(100)
         for msg in self.messages:
             self.display.draw_text(int(msg.x), int(msg.y), msg.message, msg.font,
                               msg.color, landscape=False)
