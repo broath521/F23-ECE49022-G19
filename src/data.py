@@ -50,7 +50,7 @@ def format_datetime(datetime):
         second = str(int(datetime[6]))
     
     
-    sleep(.2)
+    sleep(.005)
     format_date = month + "/" + day + "/" + str(int(datetime[0]))
     format_time = hour + ":" + minute + ":" + second
     

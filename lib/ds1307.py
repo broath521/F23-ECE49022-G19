@@ -12,6 +12,9 @@ class DS1307(object):
         self.addr = addr
         self.weekday_start = 1
         self._halt = False
+        
+        #enable oscillator at creation
+        self.i2c.writeto(self.addr, b'\x00')
 
     def _dec2bcd(self, value):
         """Convert decimal to binary coded decimal (BCD) format"""

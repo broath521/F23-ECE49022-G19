@@ -1,5 +1,5 @@
 from machine import ADC, Pin, PWM
-import time
+from time import sleep
 
 class Servo(object):
     def __init__(self, _pwm_obj, _freq, _duty_rest = None):
@@ -35,25 +35,30 @@ def move_servos(servos, voltages, threshold, move_amount_UD):
             move_amount_UD += 300
             servos[0].pwm_obj.duty_u16(move_amount_UD)
 
-    time.sleep(.01)
+    sleep(.01)
     return move_amount_UD
+
+# Function to read data from either channel 1 or all 4 channels
+def read_channels(i2c, address, ldrs=1):
+    voltages = [0]*4
+    configs = 0x98, 0xB8, 0xD8, 0xF8
+    if(ldrs):
+        for i in range(4):
+            i2c.writeto(address, bytes([configs[i]]))
+            data = i2c.readfrom(address, 3)  # 3 bytes of data
+            # Parse the data (assuming it's in 2's complement)
+            raw_value = (data[0] << 16) | (data[1] << 8) | data[2]
+            voltages[i] = (raw_value / 2**16) / 62.5 # Convert raw value to voltage (3.3V reference, 18-bit resolution)
+            if(i<3):
+                sleep(.08)
+                
+        return voltages
+    else:
+        i2c.writeto(address, bytes([configs[0]]))
+        data = i2c.readfrom(address, 3)  # 3 bytes of data
+        # Parse the data (assuming it's in 2's complement)
+        raw_value = (data[0] << 16) | (data[1] << 8) | data[2]
+        voltages[0] = (raw_value / 2**16) / 62.5 # Convert raw value to voltage (3.3V reference, 18-bit resolution) 
+        return voltages
     
-# Function to read data from a specific channel
-def read_channel(channel, i2c, address):
-    # Set the channel in the configuration byte (bits 5 and 4)
-    config = 0
-    if channel == 1: #Top Right LDR
-        config = 0xB8  
-    elif channel == 0: #Bottom Right LDR
-        config = 0x98
-    elif channel == 3: #Top Right LDR
-        config = 0xF8
-    elif channel == 2: #Top Left LDR
-        config = 0xD8
-        
-    i2c.writeto(address, bytes([config]))
-    data = i2c.readfrom(address, 3)  # 3 bytes of data
-    # Parse the data (assuming it's in 2's complement)
-    raw_value = (data[0] << 16) | (data[1] << 8) | data[2]
-    voltage = (raw_value / 2**16) / 62.5 # Convert raw value to voltage (3.3V reference, 18-bit resolution)
-    return voltage
+    

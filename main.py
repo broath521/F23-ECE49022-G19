@@ -4,15 +4,272 @@ from time import sleep
 from random import random, seed
 from lib.ili9341 import Display, color565
 from utime import ticks_cpu, ticks_diff, ticks_ms, ticks_diff, sleep_ms
-from lib.xglcd_font import XglcdFont
-from src.screens import DataMessage, Screen
+from src.screens import DataMessage, Screen, setup_screens
 from src.data import calc_charge, average_volt, format_datetime
-from src.solar import Servo, move_servos, read_channel
+from src.solar import Servo, move_servos, read_channels
 from lib.imu import MPU6050
 from lib.bmp085 import BMP180
 from lib.ds1307 import DS1307
+import uasyncio as asyncio
 
+
+async def button_loop(screenArr, i2c0, gain_factor, rtc, bmp, buttons):
+    global current_screen, solar_flag
+    while True:
+        #check state of GPIO pins. Push buttons output reversed values due to debouncing setup.
+        state_reset = not buttons[0].value()
+        state_forward = not buttons[1].value()
+        state_backward = not buttons[2].value()
+        state_solar = not buttons[3].value()
+        
+        #button check logic
+        if(state_reset):
+            #Show reset screen, then recall all setup functions and values
+            current_screen = 1
+            screenArr[current_screen].draw_screen()
+            
+            voltages = read_channels(i2c0, 0x6c, 0)
+            bat_v = voltages[0]
+            bat_v_scaled = bat_v  * gain_factor
+            charge = round(calc_charge(bat_v_scaled), 0)
+            charge_msg.value = str(charge)
+
+            datetime = rtc.datetime()
+            format_date, format_time = format_datetime(datetime)
+            date_msg.value = format_date
+            time_msg.value = format_time
+
+            firstStep = True
+            steps = 0
+            prev_steps = steps
+            last_accel = [0, 0, 0]
+            
+            distance = 0
+            accel_arr = [0, 0]
+            vel_arr = [0, 0]
+            pos_arr = [0, 0]
+            dist_msg.value = str(distance)
+            
+            altitude = round(bmp.altitude, 1)
+            alt_msg.value = str(altitude)
+            
+            temp = bmp.temperature
+            temp_msg.value = str(temp)
+          
+            sleep(1)
+            current_screen = 2
+            screenArr[current_screen].draw_screen()
+            
+            print("Reset Button Pressed")
+            print("Steps: " + str(steps))
+            print("Distance: " + str(distance) + " m")
+            print("Temperature: " + str(temp) + " F")
+            print("Altitude: " + str(altitude) + " m")
+            print("Charge: " + str(charge) + " %")
+            print("Date: " + format_date)
+            print("Time: " + format_time)
+            
+            sleep_ms(10)
+          
+        elif(state_forward):
+            #go to next screen and load, loop if past last data screen
+            current_screen+=1
+            if(current_screen>4):
+                current_screen = 2
+            '''print("Forward Pressed")
+            print("Current Screen: " + str(current_screen-1))'''
+            sleep_ms(100)
+            screenArr[current_screen].draw_screen()
+            sleep_ms(100)
+          
+        elif(state_backward):
+            #go to past screen and load, loop if past first data screen
+            current_screen-=1
+            if(current_screen<2):
+                current_screen = 4
+            '''print("Backward Pressed")
+            print("Current Screen: " + str(current_screen-1))'''
+            sleep_ms(100)
+            screenArr[current_screen].draw_screen()
+            sleep_ms(100)
+        
+        elif(state_solar):
+            if(solar_toggle_msg.value == "Disabled"):
+                solar_toggle_msg.value = "Enabled"
+            elif(solar_toggle_msg.value == "Enabled"):
+                solar_toggle_msg.value = "Disabled"
+            
+            #store last screen and load solar flag screen
+            last_screen = current_screen
+            current_screen = 6
+            screenArr[current_screen].draw_screen()
+            
+            #update flag
+            solar_flag = not solar_flag
+            sleep(4)
+            
+            #return to last screen
+            current_screen = last_screen
+            screenArr[current_screen].draw_screen()
+            sleep(.5)
+            
+        await asyncio.sleep(0)
+        
+async def async_loop_1(timing_arr, i2c0, rtc, bmp, servos, servo_thresh, move_amount_UD, gain_factor, display):
+    while True:
+        ###timing loops###
+        current_time = ticks_ms()
+
+        #charge check
+        if ticks_diff(current_time, last_updates[0]) >= timing_arr[0]:
+            diff_arr[0] = ticks_diff(current_time, last_updates[0])
+            voltages = read_channels(i2c0, 0x6c, 0)
+            bat_v = voltages[0]
+            bat_v_scaled = bat_v  * gain_factor
+            charge = round(calc_charge(bat_v_scaled), 0)
+            
+            #update charge message
+            if(current_screen == 2):
+                charge_msg.draw_data(display, str(charge))
+            else:
+                charge_msg.value = str(charge)
+                
+            last_updates[0] = current_time
+            
+        await asyncio.sleep(0)
+        current_time = ticks_ms()
+        #datetime check
+        if ticks_diff(current_time, last_updates[1]) >= timing_arr[1]:
+            diff_arr[1] = ticks_diff(current_time, last_updates[1])
+            #pull current datetime
+            datetime = rtc.datetime()
+            
+            #get output strings for date and time
+            format_date, format_time = format_datetime(datetime)
+            
+            #update data and time messages
+            if(current_screen == 2):
+                #date_msg.draw_data(display, format_date)
+                time_msg.draw_data(display, format_time)
+            else:
+                date_msg.value = format_date
+                time_msg.value = format_time
+
+            last_updates[1] = current_time
+        
+        await asyncio.sleep(0)
+        current_time = ticks_ms()
+        #temp check
+        if ticks_diff(current_time, last_updates[2]) >= timing_arr[2]:
+            diff_arr[2] = ticks_diff(current_time, last_updates[2])
+            temp_c = round(bmp.temperature, 1)        #get the temperature in degree celsius
+            temp_f= round((temp_c * (9/5) + 32), 1)   #convert the temperature value to fahrenheit
+            
+            #update temp message
+            if(current_screen == 3):
+                temp_msg.draw_data(display, str(temp_f))
+            else:
+                temp_msg.value = str(temp_f)
+
+            last_updates[2] = current_time
+        
+        await asyncio.sleep(0)
+        current_time = ticks_ms()
+        #altitude check
+        if ticks_diff(current_time, last_updates[3]) >= timing_arr[3]:
+            diff_arr[3] = ticks_diff(current_time, last_updates[3])
+            #read current altitude
+            altitude = round(bmp.altitude, 1)
+            
+            #update altitude message
+            if(current_screen == 3):
+                alt_msg.draw_data(display, str(altitude))
+            else:
+                alt_msg.value = str(altitude)
+
+            last_updates[3] = current_time
+        
+        await asyncio.sleep(0)
+        current_time = ticks_ms()
+        #LDR check
+        if ticks_diff(current_time, last_updates[5]) >= timing_arr[5]:
+            diff_arr[5] = ticks_diff(current_time, last_updates[5])
+            current_time = ticks_ms()
+            if(solar_flag):
+                #read voltages from channels 1 to 4 on MCP3234
+                ldr_voltages = read_channels(i2c0, 0x6a)
+                #rotate servos based off of voltage readings
+                move_amount_UD = move_servos(servos, ldr_voltages, servo_thresh, move_amount_UD)
+
+            last_updates[5] = current_time
+            
+async def async_loop_2(timing_arr, i2c1, imu, accel_arr, vel_arr, pos_arr, idle_ax, idle_ay, idle_az, last_accel, threshold, grav_convert, ACCELEROMETER_SENSITIVITY, TIME_INTERVAL, firstStep, display):
+    distance = float(dist_msg.value)
+    steps = int(steps_msg.value)
+    while True:
+        ###timing loops###
+        current_time = ticks_ms()
+
+        #distance check
+        if ticks_diff(current_time, last_updates[4]) >= timing_arr[4]:
+            diff_arr[4] = ticks_diff(current_time, last_updates[4])
+            #print(diff_arr[4])
+            #set old position as current
+            old_pos = pos_arr
+            #read accelerometer values and subtract idle offset
+            d_ax=round(imu.accel.x - idle_ax, 2)
+            d_ay=round(imu.accel.y - idle_ay, 2)
+            d_az=round(imu.accel.z - idle_az, 2)
+
+            #if either reading is greater than a threshold, compute double-integral to find position
+            if(abs(d_ax) > .1 or abs(d_ay) > .1):
+                accel_arr = [d_ax * grav_convert / ACCELEROMETER_SENSITIVITY / 2 , d_ay * grav_convert / ACCELEROMETER_SENSITIVITY / 2]
+                vel_arr = [vel_arr[0] + accel_arr[0]*TIME_INTERVAL, vel_arr[1] + accel_arr[1]*TIME_INTERVAL]
+                pos_arr = [round(pos_arr[0] + vel_arr[0]*TIME_INTERVAL, 3), round(pos_arr[1] + vel_arr[1]*TIME_INTERVAL, 3)]
+                
+                #add to total distance
+                distance += ((pos_arr[0]-old_pos[0])**2 + (pos_arr[1]-old_pos[1])**2)**.5
+            distance = round(distance, 2)
+            
+            print(distance)
+            
+            #if distance is greater than a minimum, update distance message
+            if(distance > .01):
+                if(current_screen == 4):
+                    dist_msg.draw_data(display, str(distance))
+                else:
+                    dist_msg.value = str(distance)
+            
+            #set previous steps to current steps
+            prev_steps = steps
+            
+            #calculate magnitutde of readings
+            accel_magnitude = (d_ax ** 2 + d_ay ** 2 + d_az ** 2) ** 0.5
+
+            # Detect a step based on the change in acceleration in comparison to a threshold
+            # also check if it is the first pass through, to eliminate an extra step being calculated
+            if ((accel_magnitude - abs(last_accel[2]) > threshold) and (not firstStep)):
+                steps += 1
+            
+            if(firstStep):
+                firstStep = False #update to signify first passthrough done
+                
+            #update last acceleration readings
+            last_accel = [d_ax, d_ay, d_az]
+            
+            #update steps message
+            if(current_screen == 4 and steps > prev_steps):
+                steps_msg.draw_data(display, str(steps))
+            else:
+                steps_msg.value = str(steps)
+                
+            last_updates[4] = current_time
+            
+        await asyncio.sleep(0)
+        
 def main():
+    global screenArr, charge_msg, date_msg, time_msg, temp_msg, alt_msg, dist_msg, steps_msg, solar_toggle_msg, current_screen
+    global solar_flag, diff_arr, ldr_voltages, move_amount_UD, last_updates, distance
     sleep(.5)
     print("start")
     try:
@@ -30,6 +287,8 @@ def main():
         backward = Pin(12, Pin.IN)
         toggle_solar = Pin(27, Pin.IN)
         
+        buttons = [reset, forward, backward, toggle_solar]
+        
         solar_flag = True #flag to disable/enable solar tracking
         
         #setup I2C devices
@@ -37,7 +296,7 @@ def main():
         i2c1 = I2C(1, sda=Pin(6), scl=Pin(7), freq=100000)
         
         #send general call reset to MCP3424 chips to latch their addr pins
-        while True:
+        '''while True:
             try:
                 i2c0.writeto(0x00, bytearray([0x06]))
                 sleep(.3)
@@ -45,7 +304,7 @@ def main():
             except:
                 print("Fail")
                 sleep(.3)
-                pass
+                pass'''
 
         #test code to confirm I2C device connections
         print('Scanning I2C0 bus.')
@@ -75,64 +334,13 @@ def main():
             print('Decimal address:', device, ", Hex address: ", hex(device))
         print("")
         
-        ### initialize screen messages and objects ###
-        default_val = "-1"
-        fontType = XglcdFont('fonts/Unispace12x24.c', 12, 24) #loads the chosen font into a glcd object
-        
-        #product logo loading
-        suns_message = DataMessage("Sun Seeker", int(120 - 5*fontType.width), int(300 - (fontType.height/2)),
-                               fontType, color565(255,255,255))
-        
-        #start screen
-        start_message_1 = DataMessage("Loading System...", 0, 60, fontType, color565(255,255,255), value = "", unit = "")
-        start_message_2 = DataMessage("Taking Data...", 0, start_message_1.y + int(2*fontType.height),
-                                      fontType, color565(255,255,255), value = "", unit = "")
-        solar_toggle_msg = DataMessage("Tracking: ", 0, start_message_2.y + int(2*fontType.height),
-                                      fontType, color565(255,255,255), value = "Disabled", unit = "")
-        
-        solar_screen = Screen(display, [solar_toggle_msg, suns_message])
-        start_screen = Screen(display, [start_message_1, start_message_2, solar_toggle_msg, suns_message])
-        
-        #reset screen
-        reset_message_1 = DataMessage("Resetting System...", 0, 60, fontType, color565(255,255,255), value = "", unit = "")
-        reset_screen = Screen(display, [reset_message_1, suns_message])
-        
-        #first screen messages
-        charge_msg = DataMessage("Charge: ", 0, 60, fontType, color565(255,255,255), value = default_val, unit = "%")
-        date_msg = DataMessage("Date: ", 0, charge_msg.y + int(2*fontType.height),
-                               fontType, color565(255,255,255), value = default_val)
-        time_msg = DataMessage("Time: ", 0, date_msg.y + int(2*fontType.height),
-                               fontType, color565(255,255,255), value = default_val)
-        
-        screen1 = Screen(display, [charge_msg, date_msg, time_msg, suns_message])
-        
-        #second screen messages
-        temp_msg = DataMessage("Temperature: ", 0, 60, fontType, color565(255,255,255), value = default_val, unit = "F")
-        alt_msg = DataMessage("Altitude: ", 0, temp_msg.y + int(2*fontType.height),
-                               fontType, color565(255,255,255), value = default_val, unit = "m")
-        
-        screen2 = Screen(display, [temp_msg, alt_msg, suns_message])
-        
-        #third screen messages
-        dist_msg = DataMessage("Distance: ", 0, 60, fontType, color565(255,255,255), value = default_val, unit = "m")
-        steps_msg = DataMessage("Steps: ", 0, dist_msg.y + int(2*fontType.height),
-                               fontType, color565(255,255,255), value = default_val, unit = "steps")
-        
-        screen3 = Screen(display, [dist_msg, steps_msg, suns_message])
-        
-        #exit screen message - runs on any error encountered
-        exit_msg = DataMessage("Exit Program", 0, 60, fontType, color565(255,255,255), value = "", unit = "")
-        
-        exit_screen = Screen(display, [exit_msg, suns_message])
-        
-        screenArr = [start_screen, reset_screen, screen1, screen2, screen3, exit_screen, solar_screen]
+        screenArr, charge_msg, date_msg, time_msg, temp_msg, alt_msg, dist_msg, steps_msg, solar_toggle_msg = setup_screens(display)
         
         #time in between data updates (in ms)
-        #charge, time, temp, altitude, distance, steps, LDRs, TestRead
-        timing_arr = [5500, 1000, 1000, 15500, 100, 350, 1500, 9550]
+        #charge, time, temp, altitude, distance/steps, LDRs
+        timing_arr = [5500, 1000, 1000, 15500, 150, 1500]
         diff_arr = [0]*7
         
-        last_updates = [ticks_ms()]*8
         seed(ticks_cpu())
         
         #used for averaging voltage readings, as ADC readings
@@ -163,8 +371,10 @@ def main():
         
         #take first charge reading
         gain_factor = 12.09
-        bat_v = read_channel(0, i2c0, 0x6c) * gain_factor
-        charge = round(calc_charge(bat_v), 2)
+        voltages = read_channels(i2c0, 0x6c, 0)
+        bat_v = voltages[0]
+        bat_v_scaled = bat_v  * gain_factor
+        charge = round(calc_charge(bat_v_scaled), 0)
         charge_msg.value = str(charge)
         
         #take first datetime reading
@@ -180,6 +390,7 @@ def main():
         steps = 0
         prev_steps = steps
         last_accel = [0, 0, 0]
+        steps_msg.value = str(steps)
         
         #calculate idle accel values to reduce error
         idle_ax_sum = 0
@@ -221,282 +432,25 @@ def main():
         sleep(1)
         current_screen = 2
         screenArr[current_screen].draw_screen()
-        #################################################
         
-        #temp temperature variables
-        calibration = [0] * 11
-        # Read calibration data from BMP180
-        calibration = read_calibration_data(i2c0, calibration)
-        
-        
-        #main loop
-        while True:
-            # Get the current time
-            current_time = ticks_ms()
+        last_updates = [ticks_ms()]*6
+        ##########################################################
+        #main async logic loops
+        loop = asyncio.get_event_loop()
+        #loop.create_task(button_loop(screenArr, i2c0, gain_factor, rtc, bmp, buttons))
+        loop.create_task(async_loop_1(timing_arr, i2c0, rtc, bmp, servos, servo_thresh, move_amount_UD, gain_factor, display))
+        loop.create_task(async_loop_2(timing_arr, i2c1, imu, accel_arr, vel_arr, pos_arr, idle_ax, idle_ay, idle_az, last_accel, threshold, grav_convert, ACCELEROMETER_SENSITIVITY, TIME_INTERVAL, firstStep, display))
             
-            #check state of GPIO pins. Push buttons output reversed values due to debouncing setup.
-            state_reset = not reset.value()
-            state_forward = not forward.value()
-            state_backward = not backward.value()
-            state_solar = not toggle_solar.value()
-            
-            #button check logic
-            if(state_reset):
-                #Show reset screen, then recall all setup functions and values
-                current_screen = 1
-                screenArr[current_screen].draw_screen()
-                  
-                bat_v = read_channel(0, i2c0, 0x6c) * gain_factor
-                charge = round(calc_charge(bat_v), 2)
-                charge_msg.value = str(charge)
-
-                datetime = rtc.datetime()
-                format_date, format_time = format_datetime(datetime)
-                date_msg.value = format_date
-                time_msg.value = format_time
-
-                firstStep = True
-                steps = 0
-                prev_steps = steps
-                last_accel = [0, 0, 0]
-                
-                distance = 0
-                accel_arr = [0, 0]
-                vel_arr = [0, 0]
-                pos_arr = [0, 0]
-                dist_msg.value = str(distance)
-                
-                altitude = round(bmp.altitude, 1)
-                alt_msg.value = str(altitude)
-                
-                temp = bmp.temperature
-                temp_msg.value = str(temp)
-              
-                sleep(1)
-                current_screen = 2
-                screenArr[current_screen].draw_screen()
-                
-                print("Reset Button Pressed")
-                print("Steps: " + str(steps))
-                print("Distance: " + str(distance) + " m")
-                print("Temperature: " + str(temp) + " F")
-                print("Altitude: " + str(altitude) + " m")
-                print("Charge: " + str(charge) + " %")
-                print("Date: " + format_date)
-                print("Time: " + format_time)
-                
-                sleep_ms(100)
-              
-            if(state_forward):
-                #go to next screen and load, loop if past last data screen
-                current_screen+=1
-                if(current_screen>4):
-                    current_screen = 2
-                '''print("Forward Pressed")
-                print("Current Screen: " + str(current_screen-1))'''
-                sleep_ms(50)
-                screenArr[current_screen].draw_screen()
-                sleep_ms(100)
-              
-            if(state_backward):
-                #go to past screen and load, loop if past first data screen
-                current_screen-=1
-                if(current_screen<2):
-                    current_screen = 4
-                '''print("Backward Pressed")
-                print("Current Screen: " + str(current_screen-1))'''
-                sleep_ms(50)
-                screenArr[current_screen].draw_screen()
-                sleep_ms(100)
-            
-            if(state_solar):
-                if(solar_toggle_msg.value == "Disabled"):
-                    solar_toggle_msg.value = "Enabled"
-                elif(solar_toggle_msg.value == "Enabled"):
-                    solar_toggle_msg.value = "Disabled"
-                
-                #store last screen and load solar flag screen
-                last_screen = current_screen
-                current_screen = 6
-                screenArr[current_screen].draw_screen()
-                
-                #update flag
-                solar_flag = not solar_flag
-                sleep(4)
-                
-                #return to last screen
-                current_screen = last_screen
-                screenArr[current_screen].draw_screen()
-                sleep(.5)
-            
-            ###timing loops###
-            current_time = ticks_ms()
-
-            #charge check
-            if ticks_diff(current_time, last_updates[0]) >= timing_arr[0]:
-                diff_arr[0] = ticks_diff(current_time, last_updates[0])
-                bat_v = read_channel(0, i2c0, 0x6c)
-                bat_v_scaled = bat_v  * gain_factor
-
-                '''print(bat_v)
-                print(bat_v_scaled)'''
-                charge = round(calc_charge(bat_v_scaled), 0)
-                '''print(charge)
-                print("")'''
-                #update charge message
-                if(current_screen == 2):
-                    charge_msg.draw_data(display, str(charge))
-                else:
-                    charge_msg.value = str(charge)
-                 
-                last_updates[0] = current_time
-                
-            #datetime check
-            if ticks_diff(current_time, last_updates[1]) >= timing_arr[1]:
-                diff_arr[1] = ticks_diff(current_time, last_updates[1])
-                #pull current datetime
-                datetime = rtc.datetime()
-                
-                #get output strings for date and time
-                format_date, format_time = format_datetime(datetime)
-                
-                #update data and time messages
-                if(current_screen == 2):
-                    #date_msg.draw_data(display, format_date)
-                    time_msg.draw_data(display, format_time)
-                else:
-                    date_msg.value = format_date
-                    time_msg.value = format_time
-                    
-                last_updates[1] = current_time
-                
-            #temp check
-            if ticks_diff(current_time, last_updates[2]) >= timing_arr[2]:
-                diff_arr[2] = ticks_diff(current_time, last_updates[2])
-                temp_c = round(bmp.temperature, 1)        #get the temperature in degree celsius
-                temp_f= round((temp_c * (9/5) + 32), 1)   #convert the temperature value to fahrenheit
-
-                '''# Read temperature and pressure
-                ut = read_uncompensated_temperature(i2c0)
-
-                # Calculate temperature and pressure
-                temp_f = calculate_temperature(ut, calibration)'''
-                
-                #update temp message
-                if(current_screen == 3):
-                    temp_msg.draw_data(display, str(temp_f))
-                else:
-                    temp_msg.value = str(temp_f)
-                    
-                last_updates[2] = current_time
-            
-            #altitude check
-            if ticks_diff(current_time, last_updates[3]) >= timing_arr[3]:
-                diff_arr[3] = ticks_diff(current_time, last_updates[3])
-                #read current altitude
-                altitude = round(bmp.altitude, 1)
-                
-                #update altitude message
-                if(current_screen == 3):
-                    alt_msg.draw_data(display, str(altitude))
-                else:
-                    alt_msg.value = str(altitude)
-                    
-                last_updates[3] = current_time
-            
-            #distance check
-            if ticks_diff(current_time, last_updates[4]) >= timing_arr[4]:
-                diff_arr[4] = ticks_diff(current_time, last_updates[4])
-                #set old position as current
-                old_pos = pos_arr
-                #read accelerometer values and subtract idle offset
-                d_ax=imu.accel.x - idle_ax
-                d_ay=imu.accel.y - idle_ay
-
-                #if either reading is greater than a threshold, compute double-integral to find position
-                if(abs(d_ax) > .1 or abs(d_ay) > .1):
-                    accel_arr = [d_ax * grav_convert / ACCELEROMETER_SENSITIVITY / 2 , d_ay * grav_convert / ACCELEROMETER_SENSITIVITY / 2]
-                    vel_arr = [vel_arr[0] + accel_arr[0]*TIME_INTERVAL, vel_arr[1] + accel_arr[1]*TIME_INTERVAL]
-                    pos_arr = [round(pos_arr[0] + vel_arr[0]*TIME_INTERVAL, 3), round(pos_arr[1] + vel_arr[1]*TIME_INTERVAL, 3)]
-                    
-                    #add to total distance
-                    distance += ((pos_arr[0]-old_pos[0])**2 + (pos_arr[1]-old_pos[1])**2)**.5
-                distance = round(distance, 2)
-                
-                #if distance is greater than a minimum, update distance message
-                if(distance > .01):
-                    if(current_screen == 4):
-                        dist_msg.draw_data(display, str(distance))
-                    else:
-                        dist_msg.value = str(distance)
-                    
-                last_updates[4] = current_time
-                
-            #steps check
-            if ticks_diff(current_time, last_updates[5]) >= timing_arr[5]:
-                diff_arr[5] = ticks_diff(current_time, last_updates[5])
-                #set previous steps to current steps
-                prev_steps = steps
-                #read accelerometer values for steps
-                s_ax=round(imu.accel.x - idle_ax, 2)
-                s_ay=round(imu.accel.y - idle_ay, 2)
-                s_az=round(imu.accel.z - idle_az, 2)
-                
-                #calculate magnitutde of readings
-                accel_magnitude = (s_ax ** 2 + s_ay ** 2 + s_az ** 2) ** 0.5
-
-                # Detect a step based on the change in acceleration in comparison to a threshold
-                # also check if it is the first pass through, to eliminate an extra step being calculated
-                if ((accel_magnitude - abs(last_accel[2]) > threshold) and (not firstStep)):
-                    steps += 1
-                
-                if(firstStep):
-                    firstStep = False #update to signify first passthrough done
-                    
-                #reord last acceleration readings
-                last_accel = [s_ax, s_ay, s_az]
-                
-                #update steps message
-                if(current_screen == 4 and steps > prev_steps):
-                    steps_msg.draw_data(display, str(steps))
-                else:
-                    steps_msg.value = str(steps)
-                    
-                last_updates[5] = current_time
-
-            #LDR check
-            if ticks_diff(current_time, last_updates[6]) >= timing_arr[6]:
-                #diff_arr[6] = ticks_diff(current_time, last_updates[6])
-                if(solar_flag):
-                    #read voltages from channels 1 to 4 on MCP3234
-                    for i in range(4):
-                        ldr_voltages[i] = read_channel(i, i2c0, 0x6a)
-                        sleep(.1)
-                    #rotate servos based off of voltage readings
-                    move_amount_UD = move_servos(servos, ldr_voltages, servo_thresh, move_amount_UD)
-                
-                last_updates[6] = current_time
-
-            #LDR check
-            if ticks_diff(current_time, last_updates[7]) >= timing_arr[7]:
-                '''print("Timing Loop Measurements")
-                print("Charge Measurement Difference: " + str(diff_arr[0]) + " ms")
-                print("TimeDate Measurement Difference: " + str(diff_arr[1]) + " ms")
-                print("Temperature Measurement Difference: " + str(diff_arr[2]) + " ms")
-                print("Altitude Measurement Difference: " + str(diff_arr[3]) + " ms")
-                print("Distance Measurement Difference: " + str(diff_arr[4]) + " ms")
-                print("Steps Measurement Difference: " + str(diff_arr[5]) + " ms")
-                print("LDR Measurement Difference: " + str(diff_arr[6]) + " ms")'''
-                last_updates[7] = current_time
-            sleep_ms(10)
-            
-    except Exception as e:
+        # Start the event loop
+        loop.run_forever()
+    except KeyboardInterrupt:
+        print("woops")
+    '''except Exception as e:
         print(e)
         display.clear()
         sleep(.5)
         current_screen = 5
         screenArr[current_screen].draw_screen()
-        
         sleep(2)
         #display.clear()
         
@@ -505,7 +459,7 @@ def main():
             if(state_reset):
                 break;
             sleep(.1)
-        main()
+        main()'''
         
 #call main on startup
 main()
