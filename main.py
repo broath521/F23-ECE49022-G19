@@ -13,7 +13,7 @@ from lib.ds1307 import DS1307
 import uasyncio as asyncio
 
 
-async def button_loop(screenArr, i2c0, gain_factor, rtc, bmp, buttons):
+async def button_loop(screenArr, i2c0, gain_factor, rtc, bmp, buttons, servos):
     global current_screen, solar_flag
     while True:
         #check state of GPIO pins. Push buttons output reversed values due to debouncing setup.
@@ -50,8 +50,9 @@ async def button_loop(screenArr, i2c0, gain_factor, rtc, bmp, buttons):
             pos_arr = [0, 0]
             dist_msg.value = str(distance)
             
-            altitude = round(bmp.altitude, 1)
-            alt_msg.value = str(altitude)
+            altitude_start = round(bmp.altitude, 1)
+            altitude_diff = 0
+            alt_msg.value = str(altitude_diff)
             
             temp = bmp.temperature
             temp_msg.value = str(temp)
@@ -59,6 +60,8 @@ async def button_loop(screenArr, i2c0, gain_factor, rtc, bmp, buttons):
             sleep(1)
             current_screen = 2
             screenArr[current_screen].draw_screen()
+            
+            solar_flag = False
             
             print("Reset Button Pressed")
             print("Steps: " + str(steps))
@@ -81,21 +84,20 @@ async def button_loop(screenArr, i2c0, gain_factor, rtc, bmp, buttons):
             sleep_ms(100)
             screenArr[current_screen].draw_screen()
             sleep_ms(100)
-          
-        elif(state_backward):
-            #go to past screen and load, loop if past first data screen
-            current_screen-=1
-            if(current_screen<2):
-                current_screen = 4
-            '''print("Backward Pressed")
-            print("Current Screen: " + str(current_screen-1))'''
-            sleep_ms(100)
-            screenArr[current_screen].draw_screen()
-            sleep_ms(100)
         
         elif(state_solar):
             if(solar_toggle_msg.value == "Disabled"):
                 solar_toggle_msg.value = "Enabled"
+                
+                #calculate neutral position duty cycle
+                freq = servos[0].pwm_obj.freq
+                period = 1/freq
+                PW = 1500
+                DS = PW/1000000/period
+                
+                #set netrual rotation
+                servos[0].pwm_obj.duty_u16(DS*65535)
+                    
             elif(solar_toggle_msg.value == "Enabled"):
                 solar_toggle_msg.value = "Disabled"
             
@@ -115,7 +117,11 @@ async def button_loop(screenArr, i2c0, gain_factor, rtc, bmp, buttons):
             
         await asyncio.sleep(0)
         
-async def async_loop_1(timing_arr, i2c0, rtc, bmp, servos, servo_thresh, move_amount_UD, gain_factor, display):
+async def async_loop_1(timing_arr, i2c0, rtc, bmp, servos, servo_thresh, PW_UD, gain_factor, display):
+    #constants for altitude low-pass filter
+    alt_smoothing = .2
+    prev_alt = round(bmp.altitude, 1)
+    
     while True:
         ###timing loops###
         current_time = ticks_ms()
@@ -123,6 +129,8 @@ async def async_loop_1(timing_arr, i2c0, rtc, bmp, servos, servo_thresh, move_am
         #charge check
         if ticks_diff(current_time, last_updates[0]) >= timing_arr[0]:
             diff_arr[0] = ticks_diff(current_time, last_updates[0])
+            
+            #read ADC voltage and scale up to absolute charge
             voltages = read_channels(i2c0, 0x6c, 0)
             bat_v = voltages[0]
             bat_v_scaled = bat_v  * gain_factor
@@ -138,6 +146,7 @@ async def async_loop_1(timing_arr, i2c0, rtc, bmp, servos, servo_thresh, move_am
             
         await asyncio.sleep(0)
         current_time = ticks_ms()
+        
         #datetime check
         if ticks_diff(current_time, last_updates[1]) >= timing_arr[1]:
             diff_arr[1] = ticks_diff(current_time, last_updates[1])
@@ -159,9 +168,11 @@ async def async_loop_1(timing_arr, i2c0, rtc, bmp, servos, servo_thresh, move_am
         
         await asyncio.sleep(0)
         current_time = ticks_ms()
+        
         #temp check
         if ticks_diff(current_time, last_updates[2]) >= timing_arr[2]:
             diff_arr[2] = ticks_diff(current_time, last_updates[2])
+            
             temp_c = round(bmp.temperature, 1)        #get the temperature in degree celsius
             temp_f= round((temp_c * (9/5) + 32), 1)   #convert the temperature value to fahrenheit
             
@@ -175,64 +186,96 @@ async def async_loop_1(timing_arr, i2c0, rtc, bmp, servos, servo_thresh, move_am
         
         await asyncio.sleep(0)
         current_time = ticks_ms()
+        
         #altitude check
         if ticks_diff(current_time, last_updates[3]) >= timing_arr[3]:
             diff_arr[3] = ticks_diff(current_time, last_updates[3])
             #read current altitude
             altitude = round(bmp.altitude, 1)
+
+            # Apply low-pass filter
+            alt_filtered = alt_smoothing * altitude + (1 - alt_smoothing) * prev_alt
+
+            # Update previous value for the next iteration
+            prev_alt = alt_filtered
+
+            #calculate altitude difference from start
+            altitude_diff = round(alt_filtered - altitude_start, 1)
             
             #update altitude message
             if(current_screen == 3):
-                alt_msg.draw_data(display, str(altitude))
+                alt_msg.draw_data(display, str(altitude_diff))
             else:
-                alt_msg.value = str(altitude)
+                alt_msg.value = str(altitude_diff)
 
             last_updates[3] = current_time
         
         await asyncio.sleep(0)
         current_time = ticks_ms()
+        
         #LDR check
-        if ticks_diff(current_time, last_updates[5]) >= timing_arr[5]:
+        if (ticks_diff(current_time, last_updates[5]) >= timing_arr[5] and solar_flag):
             diff_arr[5] = ticks_diff(current_time, last_updates[5])
             current_time = ticks_ms()
-            if(solar_flag):
-                #read voltages from channels 1 to 4 on MCP3234
-                ldr_voltages = read_channels(i2c0, 0x6a)
-                #rotate servos based off of voltage readings
-                move_amount_UD = move_servos(servos, ldr_voltages, servo_thresh, move_amount_UD)
+            #read voltages from channels 1 to 4 on MCP3234
+            ldr_voltages = read_channels(i2c0, 0x6a)
+            #rotate servos based off of voltage readings
+            PW_UD = move_servos(servos, ldr_voltages, servo_thresh, PW_UD)
 
             last_updates[5] = current_time
             
-async def async_loop_2(timing_arr, i2c1, imu, accel_arr, vel_arr, pos_arr, idle_ax, idle_ay, idle_az, last_accel, threshold, grav_convert, ACCELEROMETER_SENSITIVITY, TIME_INTERVAL, firstStep, display):
+        await asyncio.sleep(0)
+            
+async def async_loop_2(timing_arr, i2c1, imu, accel_arr, vel_arr, pos_arr, idle_ax, idle_ay, idle_az, last_accel, grav_convert, ACCELEROMETER_SENSITIVITY, TIME_INTERVAL, firstStep, display):
     distance = float(dist_msg.value)
     steps = int(steps_msg.value)
+    
+    #constants for movement calculations
+    d_a_thresh = .03
+    steps_thresh = .03
+    sensitivity = 4
+    
+    # Constants for the low-pass filter
+    accel_smoothing = 0.1
+    prev_d_ax = round(imu.accel.x - idle_ax, 2)
+    prev_d_ay = round(imu.accel.y - idle_ay, 2)
+    prev_d_az = round(imu.accel.z - idle_az, 2)
+    
     while True:
         ###timing loops###
         current_time = ticks_ms()
-
         #distance check
-        if ticks_diff(current_time, last_updates[4]) >= timing_arr[4]:
+        if(ticks_diff(current_time, last_updates[4]) >= timing_arr[4] and (not solar_flag)):
             diff_arr[4] = ticks_diff(current_time, last_updates[4])
             #print(diff_arr[4])
             #set old position as current
             old_pos = pos_arr
-            #read accelerometer values and subtract idle offset
-            d_ax=round(imu.accel.x - idle_ax, 2)
-            d_ay=round(imu.accel.y - idle_ay, 2)
-            d_az=round(imu.accel.z - idle_az, 2)
+            # Read accelerometer values and subtract idle offset
+            d_ax = round(imu.accel.x - idle_ax, 2)
+            d_ay = round(imu.accel.y - idle_ay, 2)
+            d_az = round(imu.accel.z - idle_az, 2)
 
-            #if either reading is greater than a threshold, compute double-integral to find position
-            if(abs(d_ax) > .1 or abs(d_ay) > .1):
-                accel_arr = [d_ax * grav_convert / ACCELEROMETER_SENSITIVITY / 2 , d_ay * grav_convert / ACCELEROMETER_SENSITIVITY / 2]
-                vel_arr = [vel_arr[0] + accel_arr[0]*TIME_INTERVAL, vel_arr[1] + accel_arr[1]*TIME_INTERVAL]
-                pos_arr = [round(pos_arr[0] + vel_arr[0]*TIME_INTERVAL, 3), round(pos_arr[1] + vel_arr[1]*TIME_INTERVAL, 3)]
-                
-                #add to total distance
-                distance += ((pos_arr[0]-old_pos[0])**2 + (pos_arr[1]-old_pos[1])**2)**.5
-            distance = round(distance, 2)
-            
-            print(distance)
-            
+            # Apply low-pass filter
+            d_ax_filtered = accel_smoothing * d_ax + (1 - accel_smoothing) * prev_d_ax
+            d_ay_filtered = accel_smoothing * d_ay + (1 - accel_smoothing) * prev_d_ay
+            d_az_filtered = accel_smoothing * d_az + (1 - accel_smoothing) * prev_d_az
+
+            #print(d_ax_filtered, d_ay_filtered, d_az_filtered)
+            # Update previous values for the next iteration
+            prev_d_ax = d_ax_filtered
+            prev_d_ay = d_ay_filtered
+            prev_d_az = d_az_filtered
+
+            # If either filtered reading is greater than a threshold, compute double-integral to find position
+            if abs(d_ax_filtered) > d_a_thresh or abs(d_ay_filtered) > d_a_thresh:
+                accel_arr = [d_ax_filtered * grav_convert / sensitivity, d_ay_filtered * grav_convert / sensitivity]
+                vel_arr = [vel_arr[0] + (accel_arr[0] * TIME_INTERVAL), vel_arr[1] + (accel_arr[1] * TIME_INTERVAL)]
+                pos_arr = [pos_arr[0] + (vel_arr[0] * TIME_INTERVAL), pos_arr[1] + (vel_arr[1] * TIME_INTERVAL)]
+
+                # Add to total distance
+                distance += ((pos_arr[0] - old_pos[0]) ** 2 + (pos_arr[1] - old_pos[1]) ** 2) ** 0.5
+                distance = round(distance, 3)
+                print(distance)
             #if distance is greater than a minimum, update distance message
             if(distance > .01):
                 if(current_screen == 4):
@@ -240,22 +283,23 @@ async def async_loop_2(timing_arr, i2c1, imu, accel_arr, vel_arr, pos_arr, idle_
                 else:
                     dist_msg.value = str(distance)
             
+            #######################################################################
             #set previous steps to current steps
             prev_steps = steps
             
             #calculate magnitutde of readings
-            accel_magnitude = (d_ax ** 2 + d_ay ** 2 + d_az ** 2) ** 0.5
+            accel_magnitude = ((d_az_filtered ** 2) + (d_ay_filtered ** 2) + (d_az_filtered ** 2)) ** 0.5
 
             # Detect a step based on the change in acceleration in comparison to a threshold
             # also check if it is the first pass through, to eliminate an extra step being calculated
-            if ((accel_magnitude - abs(last_accel[2]) > threshold) and (not firstStep)):
+            if ((accel_magnitude - last_accel > steps_thresh) and (not firstStep)):
                 steps += 1
             
             if(firstStep):
                 firstStep = False #update to signify first passthrough done
                 
             #update last acceleration readings
-            last_accel = [d_ax, d_ay, d_az]
+            last_accel = accel_magnitude
             
             #update steps message
             if(current_screen == 4 and steps > prev_steps):
@@ -267,9 +311,10 @@ async def async_loop_2(timing_arr, i2c1, imu, accel_arr, vel_arr, pos_arr, idle_
             
         await asyncio.sleep(0)
         
+        
 def main():
     global screenArr, charge_msg, date_msg, time_msg, temp_msg, alt_msg, dist_msg, steps_msg, solar_toggle_msg, current_screen
-    global solar_flag, diff_arr, ldr_voltages, move_amount_UD, last_updates, distance
+    global solar_flag, diff_arr, ldr_voltages, PW_UD, last_updates, altitude_diff, altitude_start, distance
     sleep(.5)
     print("start")
     try:
@@ -289,14 +334,14 @@ def main():
         
         buttons = [reset, forward, backward, toggle_solar]
         
-        solar_flag = True #flag to disable/enable solar tracking
+        solar_flag = False #flag to disable/enable solar tracking
         
         #setup I2C devices
         i2c0 = I2C(0, sda=Pin(0), scl=Pin(1), freq=100000)
         i2c1 = I2C(1, sda=Pin(6), scl=Pin(7), freq=100000)
         
         #send general call reset to MCP3424 chips to latch their addr pins
-        '''while True:
+        while True:
             try:
                 i2c0.writeto(0x00, bytearray([0x06]))
                 sleep(.3)
@@ -304,7 +349,7 @@ def main():
             except:
                 print("Fail")
                 sleep(.3)
-                pass'''
+                pass
 
         #test code to confirm I2C device connections
         print('Scanning I2C0 bus.')
@@ -338,7 +383,7 @@ def main():
         
         #time in between data updates (in ms)
         #charge, time, temp, altitude, distance/steps, LDRs
-        timing_arr = [5500, 1000, 1000, 15500, 150, 1500]
+        timing_arr = [5500, 1000, 1050, 2000, 150, 250]
         diff_arr = [0]*7
         
         seed(ticks_cpu())
@@ -349,12 +394,12 @@ def main():
         volt_count = 0
         
         #setup servos
-        servo1 = Servo(machine.PWM(machine.Pin(8, mode=machine.Pin.OUT)), 400, 17476)
+        servo1 = Servo(machine.PWM(machine.Pin(8, mode=machine.Pin.OUT)), 50)
         servo2 = Servo(machine.PWM(machine.Pin(9, mode=machine.Pin.OUT)), 50)
         servos = [servo1, servo2]
-        servo_thresh = 0.3
+        servo_thresh = 0.1
         ldr_voltages = [0]*4
-        move_amount_UD = 17476
+        PW_UD = 1500 #pulse width of positional servo in usec
         
         #create sensors objects
         imu = MPU6050(i2c1)
@@ -385,7 +430,6 @@ def main():
         time_msg.value = format_time
         
         #setup variables for step counting
-        threshold = .3
         firstStep = True #flag to stop counter from starting as 1
         steps = 0
         prev_steps = steps
@@ -409,7 +453,7 @@ def main():
         
         #setup variables for distance calculation
         ACCELEROMETER_SENSITIVITY = 16384.0  # Sensitivity for MPU6050
-        TIME_INTERVAL = int(1000/timing_arr[4])  # Time interval between measurements
+        TIME_INTERVAL = timing_arr[4]/1000  # Time interval between measurements
         grav_convert = 9.81
         distance = 0
         accel_arr = [0, 0]
@@ -420,8 +464,9 @@ def main():
         #setup altitude and take first reading
         bmp.oversample = 2
         bmp.sealevel = 101325
-        altitude = round(bmp.altitude, 1)
-        alt_msg.value = str(altitude)
+        altitude_start = round(bmp.altitude, 1)
+        altitude_diff = 0
+        alt_msg.value = str(altitude_diff)
         
         #take first temp reading
         temp_c = bmp.temperature
@@ -437,15 +482,13 @@ def main():
         ##########################################################
         #main async logic loops
         loop = asyncio.get_event_loop()
-        #loop.create_task(button_loop(screenArr, i2c0, gain_factor, rtc, bmp, buttons))
-        loop.create_task(async_loop_1(timing_arr, i2c0, rtc, bmp, servos, servo_thresh, move_amount_UD, gain_factor, display))
-        loop.create_task(async_loop_2(timing_arr, i2c1, imu, accel_arr, vel_arr, pos_arr, idle_ax, idle_ay, idle_az, last_accel, threshold, grav_convert, ACCELEROMETER_SENSITIVITY, TIME_INTERVAL, firstStep, display))
+        loop.create_task(button_loop(screenArr, i2c0, gain_factor, rtc, bmp, buttons, servos))
+        loop.create_task(async_loop_1(timing_arr, i2c0, rtc, bmp, servos, servo_thresh, PW_UD, gain_factor, display))
+        loop.create_task(async_loop_2(timing_arr, i2c1, imu, accel_arr, vel_arr, pos_arr, idle_ax, idle_ay, idle_az, last_accel, grav_convert, ACCELEROMETER_SENSITIVITY, TIME_INTERVAL, firstStep, display))
             
         # Start the event loop
         loop.run_forever()
-    except KeyboardInterrupt:
-        print("woops")
-    '''except Exception as e:
+    except Exception as e:
         print(e)
         display.clear()
         sleep(.5)
@@ -459,7 +502,7 @@ def main():
             if(state_reset):
                 break;
             sleep(.1)
-        main()'''
+        main()
         
 #call main on startup
 main()
